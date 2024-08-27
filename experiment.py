@@ -1,11 +1,17 @@
 import agentpy as ap
+import numpy as np
 import matplotlib.pyplot as plt
 import IPython
+from import_bitmap import *
 
 
 class Road(ap.Agent):
     def setup(self):
         self.AType = 0
+
+class Station(ap.Agent):
+    def setup(self):
+        self.AType = 2
 
 
 def four_way_filter(cur_pos):
@@ -51,43 +57,87 @@ class Train(ap.Agent):
         # Gets the track 'agents' in the grid that would allow for
         # movement.
         for n_pos in self.next_roads():
-            if step_distance(n_pos, goal) < cur_dist:
+            if step_distance(n_pos, goal) < cur_dist and not n_pos in self.log['pos']:
+                t.move_to(self, n_pos)
+                return
+
+        if cur_dist == 0: return
+
+        # This runs if it is stuck, it plays hug-the-wall to get unstuck
+        for n_pos in self.next_roads():
+            if not n_pos in self.log['pos']:
                 t.move_to(self, n_pos)
                 return
 
 
-track_positions = [(0, 0), (0, 1), (0, 2), (1, 2), (1, 3), (1, 4)]
+def image_to_TrainModel(model, matrix, mapping):
+    # Applies the values of an image to create the environment in Model
+    def apply_mapping(col):
+        if not col in mapping:
+            return -1
+        return mapping[col]
+
+    mapped = np.vectorize(apply_mapping)(matrix)
+    print(mapped)
+
+    trains = list()
+    tracks = list()
+    stations = list()
+
+    for y_i in range(matrix.shape[0]):
+        for x_i in range(matrix.shape[1]):
+            v = mapped[y_i, x_i]
+            #print(v)
+            if v < 0 or v > 2:
+                continue
+
+            if v == 0: # Road
+                tracks.append( (Road(model), (y_i, x_i)) )
+            elif v == 1: # Train'
+                tracks.append((Road(model), (y_i, x_i))) # Trains obviously are on a road (track)
+                trains.append((Train(model), (y_i, x_i)))
+            elif v == 2: # Station
+                stations.append((Station(model), (y_i, x_i)))
+
+    # UnZip and add the agents to their respective part of the model
+    agents, positions = list(zip(*trains)) # First trains
+    model.trains = ap.AgentList(model, objs=list(agents))
+    model.tracks.add_agents(agents, positions=positions)
+
+    agents, positions = list(zip(*tracks)) # Then tracks
+    model.trackList = ap.AgentList(agents)
+    model.tracks.add_agents(agents, positions=positions)
+
+    agents, positions = list(zip(*stations)) # Finally train stations
+    model.stations = ap.AgentList(agents)
+    model.tracks.add_agents(agents, positions=positions)
+    
 
 
 class TrainModel(ap.Model):
     def setup(self):
-        self.trains = ap.AgentList(self)
-        self.trains.append(Train(self))
+        arr = ppm_to_array(self.p.image)
 
-        self.tracks = ap.Grid(self, [5, 5])
+        self.tracks = ap.Grid(self, arr.shape)
 
-        self.trackList = list()
-        for i in range(len(track_positions)):
-            self.trackList.append(Road(self))
+        image_to_TrainModel(self, arr, self.p.im_map)
 
-        self.tracks.add_agents(self.trackList, positions=track_positions)
-
-        self.tracks.add_agents(self.trains, positions=[(0, 0)])
 
     def update(self):
-        # print(self.tracks)
-        # neighbors = self.tracks.neighbors(self.trains[0])
-        # print("neighbors: ", neighbors)
-        # for n in neighbors:
-        #     print(n)
-        # print("=====")
-        # print(list(self.tracks.grid))
-        print("position", self.tracks.positions[self.trains[0]])
-        print("=====")
-        print("Tracks next to location:", self.trains[0].next_roads())
-        # if self.t > 2: self.stop()
-        if self.p.goal == self.tracks.positions[self.trains[0]]:
+        if self.t > 1000:
+            print("stopped after too many steps!")
             self.stop()
+
+        all_in_goal = True
+        all_stuck = True
+        for t in self.trains:
+            pos = self.tracks.positions[t]
+            t.record('pos', pos)
+
+            if self.p.goal != pos: all_in_goal = False
+            if self.t < 2 or pos != t.log['pos'][-2]: all_stuck = False
+            
+        if all_in_goal or all_stuck: self.stop()
 
 
     def step(self):
@@ -96,15 +146,30 @@ class TrainModel(ap.Model):
 
 def animation_plot(model, ax):
     attr_grid = model.tracks.attr_grid("AType", otypes='f')
-    color_dict = {0:'#ffbd33', 1:'#ff5733', None:'#d5e5d5'}
+    # Forces priority showing the train
+    for train in model.trains:
+        pos = model.tracks.positions[train]
+        attr_grid[pos[0]][pos[1]] = 1
+
+    color_dict = {0:'#ffbd33', 1:'#ff5733', 2:'#12ff33', None:'#d5e5d5'}
     ap.gridplot(attr_grid, ax=ax, color_dict=color_dict, convert=True)
 
 
 fig, ax = plt.subplots()
+
         
-parameters = {'goal': (1, 4)}
+parameters = {'goal': (4, 14),
+              'image': "test_with_trains.ppm",
+              'im_map': {0x00ff00: 1, 0x00: 0, 0xff0000: 2}}
 
 model = TrainModel(parameters)
+
+
 animation = ap.animate(model, fig, ax, animation_plot)
-IPython.display.HTML(animation.to_jshtml(fps=15))
+animation.save("video_demo.mp4", fps=2)
+
+for t in model.trains:
+    print("Route of train with id", t.id)
+    print(t.log, '\n')
+#IPython.display.HTML(animation.to_jshtml(fps=3))
 #model.run()
