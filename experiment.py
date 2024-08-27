@@ -2,6 +2,7 @@ import agentpy as ap
 import numpy as np
 import matplotlib.pyplot as plt
 import IPython
+import json
 from import_bitmap import *
 
 
@@ -78,7 +79,8 @@ def image_to_TrainModel(model, matrix, mapping):
         return mapping[col]
 
     mapped = np.vectorize(apply_mapping)(matrix)
-    print(mapped)
+    # Muestra la interpretacion de la imagen y los colores
+    #print(mapped)
 
     trains = list()
     tracks = list()
@@ -105,11 +107,11 @@ def image_to_TrainModel(model, matrix, mapping):
     model.tracks.add_agents(agents, positions=positions)
 
     agents, positions = list(zip(*tracks)) # Then tracks
-    model.trackList = ap.AgentList(agents)
+    model.trackList = ap.AgentList(model, objs=list(agents))
     model.tracks.add_agents(agents, positions=positions)
 
     agents, positions = list(zip(*stations)) # Finally train stations
-    model.stations = ap.AgentList(agents)
+    model.stations = ap.AgentList(model, objs=list(agents))
     model.tracks.add_agents(agents, positions=positions)
     
 
@@ -166,10 +168,35 @@ model = TrainModel(parameters)
 
 
 animation = ap.animate(model, fig, ax, animation_plot)
-animation.save("video_demo.mp4", fps=2)
 
+name_video = "video_demo.mp4"
+print(f"Generating video {name_video}")
+animation.save(name_video, fps=2)
+
+                                 # Generating JSON file #
+# First add coordinates of all tracks
+json_dict = {"tracks": [model.tracks.positions[t] for t in model.trackList]}
+# Then stations
+json_dict["stations"] = [model.tracks.positions[s] for s in model.stations]
+# Then all trains and their routes historically
+json_dict["trains"] = dict()
 for t in model.trains:
-    print("Route of train with id", t.id)
-    print(t.log, '\n')
+    json_dict["trains"][t.id] = t.log['pos']
+
+json_dump = json.dumps(json_dict, sort_keys=True)
+#print(json_dump)
+
+# Writing the json output, that will be used by Unity through a http server
+with open("output.json", 'w') as f:
+    f.write(json_dump)
+    f.close()
+
+
+# Useful for debuggin pathfinding algo's
+# for t in model.trains:
+#     print("Route of train with id", t.id)
+#     print(t.log, '\n')
+
+
 #IPython.display.HTML(animation.to_jshtml(fps=3))
 #model.run()
