@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import IPython
 import json
 from import_bitmap import *
+from A_star import *
 
 
 class Road(ap.Agent):
@@ -15,17 +16,6 @@ class Station(ap.Agent):
         self.AType = 2
 
 
-def four_way_filter(cur_pos):
-    # Returns the function to be passed to `filter`.  Only keeps the
-    # positions that are (exclusive) either to the 'north', 'south',
-    # 'east' or 'west' of the current position.
-    def f(track_pos):
-        x_diff = track_pos[0] - cur_pos[0]
-        y_diff = track_pos[1] - cur_pos[1]
-
-        return (abs(x_diff) + abs(y_diff)) == 1
-
-    return f
 
 def step_distance(a, b):
     # Takes two positions, returns the number of time steps it would
@@ -37,6 +27,9 @@ def step_distance(a, b):
 class Train(ap.Agent):
     def setup(self):
         self.AType = 1
+
+        # Progress in following the A* route
+        self.progress = 0
 
     def next_roads(self):
         # Filters the grid's `.neighbors` output to only the 4
@@ -69,6 +62,17 @@ class Train(ap.Agent):
             if not n_pos in self.log['pos']:
                 t.move_to(self, n_pos)
                 return
+
+    def follow_A_star(self):
+        route = self.model.routes[self]
+
+        # Avoid an IndexError if already in position or there is no route
+        if len(route) <= self.progress:
+            return
+        
+        next_pos = route[self.progress]
+        self.model.tracks.move_to(self, next_pos)
+        self.progress = self.progress + 1
 
 
 def image_to_TrainModel(model, matrix, mapping):
@@ -123,6 +127,16 @@ class TrainModel(ap.Model):
         self.tracks = ap.Grid(self, arr.shape)
 
         image_to_TrainModel(self, arr, self.p.im_map)
+        self.routes = dict()
+
+        # Choose a random station to be the target of a train
+        stations = self.stations.random(n=len(self.trains))
+        for i in range(len(self.trains)):
+            t = self.trains[i]
+            goal = self.stations[i]
+            route = A_Star(t, goal)
+            print(f"Route for train in {self.tracks.positions[t]}:\n{route}\n{'='*50}\n")
+            self.routes[t] = route
 
 
     def update(self):
@@ -143,7 +157,8 @@ class TrainModel(ap.Model):
 
 
     def step(self):
-        self.trains.go_to_goal()
+        #self.trains.go_to_goal()
+        self.trains.follow_A_star()
 
 
 def animation_plot(model, ax):
@@ -160,8 +175,8 @@ def animation_plot(model, ax):
 fig, ax = plt.subplots()
 
         
-parameters = {'goal': (4, 14),
-              'image': "test_with_trains.ppm",
+parameters = {'goal': (32, 25),
+              'image': "Europa_70x90_trains_n_stations.ppm",
               'im_map': {0x00ff00: 1, 0x00: 0, 0xff0000: 2}}
 
 model = TrainModel(parameters)
@@ -171,7 +186,7 @@ animation = ap.animate(model, fig, ax, animation_plot)
 
 name_video = "video_demo.mp4"
 print(f"Generating video {name_video}")
-animation.save(name_video, fps=2)
+animation.save(name_video, fps=5)
 
                                  # Generating JSON file #
 # First add coordinates of all tracks
