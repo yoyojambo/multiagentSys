@@ -80,16 +80,19 @@ class Train(ap.Agent):
         rem = self.remaining_route()
         orem = other.remaining_route()
 
-        assert (rem[t] == orem[t] or (rem[t+1] == orem[t] and rem[t] == orem[t+1])), f"remaining_route[t] is not a collision {rem[t]} != {orem[t]}"
+        swap_collision = rem[t+1] == orem[t] and rem[t] == orem[t+1]
 
-        for i, p in enumerate(rem[:t+1][::-1]):
+        assert (rem[t] == orem[t] or swap_collision), f"remaining_route[t] is not a collision {rem[t]} != {orem[t]}"
+
+        for i, p in enumerate(rem[:t][::-1]):
             # if not (p in orem[t:]):
             #     # There is a point before an intersection
             #     print(f"Intersection not needed, can be waited out!")
             if p in self.model.intersections:
                 # If the collision is in the same intersection but they don't go the same way
-                if i == 0 and (rem[t-1] != orem[t+1]):
-                    return (t-1, rem[t-1], 1)
+                # if i == 0 and (rem[t-1] != orem[t+1]):
+                #     print(f"Using SC for {collision}")
+                #     return (t, rem[t-1], 1)
 
                 inter = self.model.intersections[p]
                 possible_spots = [self.model.tracks.positions[n] for n in FWF_neighbors(inter) ]
@@ -97,14 +100,73 @@ class Train(ap.Agent):
                 for poss in possible_spots:
                     if not poss in orem:
                         # if it is a "swap" collision, add 1 to the time waiting.
-                        return (t - i - 1, poss, i + 1 + (rem[t+1] == orem[t] and rem[t] == orem[t+1]))
+                        ins_point = t - i
+                        wait = 2 * (i + swap_collision) + 2
+
+                        assert ins_point >= 0, f"Insert point is {ins_point}, which will insert {poss} in an unexpected place!"
+
+                        return (ins_point, poss, wait)
         else:
             print(f"Found no way to avoid {collision} as {self}")
 
 
-    def give_way(self):
-        pass
+    def give_way(self, collision):
+        """In this strategy, `self` is giving way, so it essentially follows `other`s route until it reaches the nearest intersection, then moves out of the way, and waits for it to pass"""
+        other = None
+        t = collision[0] # Time to collision
+        if collision[1][0] is self:
+            other = collision[1][1]
+        else:
+            other = collision[1][0]
 
+        rem = self.remaining_route()
+        orem = other.remaining_route()
+
+        assert (rem[t] == orem[t] or (rem[t+1] == orem[t] and rem[t] == orem[t+1])), f"remaining_route[t] is not a collision {rem[t]} != {orem[t]}"
+
+        # Give way point. The detour to be taken
+        GW_point = None
+        #print(f"finding GW in: {orem[t*2+1:]}")
+        for i, p in enumerate(orem[t*2+1:]):
+            if GW_point: break
+            if p in self.model.intersections:
+                inter = self.model.intersections[p]
+                possible_spots = list(FWF_neighbors(inter))
+                for poss in possible_spots:
+                    poss_pos = self.model.tracks.positions[poss]
+                    if not poss_pos in orem:
+                        GW_point = poss
+
+                if len(possible_spots) < 3:
+                    print(f"!!!!!!!!!! {inter} ({p}): {list(self.model.tracks.neighbors(inter))}")
+
+        if GW_point is None:
+            # Reaching the end like this means `self` is trapped, it
+            # cannot avoid the collision by backing away.
+            return False
+
+        
+        # Essentially re-writing the whole route, to include the detour
+        objective = None
+        for s in self.model.stations:
+            if model.tracks.positions[s] == rem[-1]:
+                objective = s
+                break
+
+        assert not objective is None, "Couldn't find the station again (based on coordinates)" 
+
+        # This function does not bother with any wait or anything,
+        # adjust_route will handle it next cycle.
+        current = self.model.tracks.positions[self]
+        diversion = self.model.tracks.positions[GW_point]
+        final_dest = self.model.tracks.positions[objective]
+        print(f"New route for {self} from {current} to {diversion} to {final_dest}:")
+        new_route = A_Star(self, GW_point) + A_Star(GW_point, objective)
+        print(new_route)
+        self.model.routes[self] = new_route
+        self.progress = 0
+        
+        return True
 
     def priority_func(self):
         rem = self.remaining_route()
@@ -174,19 +236,23 @@ class TrainModel(ap.Model):
             route = A_Star(t, goal)
             #print(f"Route for train in {self.tracks.positions[t]}:\n{route}\n{'='*50}\n")
             self.routes[t] = route
-            self.routes_hist[t] = [route]
+            self.routes_hist[t] = list()
 
 
         # Fill list of intersections
         self.intersections = dict()
         # {self.tracks.positions[r]: r for r in self.trackList if len(self.tracks.neighbors(r)) >= 3}
         for r in self.trackList:
-            n_iter = self.tracks.neighbors(r)
+            n_iter = FWF_neighbors(r)
             only_roads = len([a for a in n_iter if not a in self.trains])
             if only_roads >= 3:
                 self.intersections[self.tracks.positions[r]] = r
 
+        print(f"Total Intersections in map: {len(self.intersections)}")
+
         print(f"Expected collisions:\n {self.future_collisions()}")
+
+        self.total_collisions = 0
                 
 
     def update(self):
@@ -209,8 +275,8 @@ class TrainModel(ap.Model):
             while pos == self.routes[t][-1]:
                 new_goal = list(self.stations.random())[0]
                 new_route = A_Star(t, new_goal)
+                self.routes_hist[t].append(self.routes[t])
                 self.routes[t] = new_route
-                self.routes_hist[t].append(new_route)
                 t.rounds = rounds_finished + 1
                 t.progress = 0
 
@@ -224,42 +290,90 @@ class TrainModel(ap.Model):
                 all_finished = False
                 break
             
-        if all_finished: self.stop()
+        if all_finished:
+            print(f"Total collisions in run: {self.total_collisions}")
+            self.stop()
 
         # Detect collisions
         positions = [self.tracks.positions[t] for t in self.trains]
+        stations = [self.tracks.positions[s] for s in self.stations]
         
         for i in range(len(positions)-1):
+            train_i = self.trains[i]
             for j in range(i+1, len(positions)):
+                train_j = self.trains[j]
+                if positions[i] in stations or positions[j] in stations: continue
+
                 if positions[i] == positions[j]:
-                    print(f"{self.trains[i]} and {self.trains[j]} collisioned in {positions[i]} (t={self.t})")
+                    print(f"{train_i} and {train_j} collisioned in {positions[i]} (t={self.t})")
+                    self.total_collisions += 1
+                if self.t > 0:
+                    assert train_i.log['pos'][-1] == positions[i] and train_j.log['pos'][-1] == positions[j]
+                    
+                    if train_i.log['pos'][-2] == train_j.log['pos'][-1] and train_i.log['pos'][-1] == train_j.log['pos'][-2]:
+                        print(f"\n{train_i} and {train_j} collisioned between {positions[i]} and {positions[j]} (swap crash) (t={self.t})")
+                        print(f"Recent Moves: {train_i}{train_i.log['pos'][-4:]}")
+                        print(f"Recent Moves: {train_j}{train_j.log['pos'][-4:]}\n")
+                        self.total_collisions += 1
 
         if routes_change:
-            self.resolve_collisions()
-
+            self.resolve_collisions()        
+        
 
     def resolve_collisions(self):
         collisions = self.future_collisions()
+        tried = list()
         while collisions:
             coll = collisions.pop()
             
             a = coll[1][0]
             b = coll[1][1]
+
+            # Try with a
             yielder = a
-            
             adj = a.adjust_route(coll)
             if adj is None:
                 print(f"{a} could not avoid, trying {b}")
                 adj = b.adjust_route(coll)
                 yielder = b
             if adj is None:
-                print(f"{coll} not avoidable!")
+                print(f"{coll} not avoidable through divertion alone! Backtracking!")
+
+                # Running give_way algorithm
+                yielder = a
+                gave_way = a.give_way(coll)
+                if not gave_way:
+                    yielder = b
+                    gave_way = b.give_way(coll)
+                if gave_way:
+                    print(f"{yielder} gave way!")
+                    collisions = self.future_collisions()
+                    continue
+                else:
+                    raise Exception(f"Could not resolve the collision {coll}!")
+                continue
+
+            
+            # Check if the algorithm is actually resolving the collision
+            already_tried = False
+            for t in tried:
+                if a in t[0] and b in t[0] and adj[1] == t[1]:
+                    print(f"Collision {coll} is looped, ignoring (t={self.model.t})")
+                    already_tried = True
+
+            if already_tried:
                 continue
 
             t = adj[0]
+            # Also add the re-entering of the intersection, as to avoid teleporting diagonally
+            self.routes[yielder].insert(t+yielder.progress, self.routes[yielder][t+yielder.progress-1])
+
             for i in range(adj[2]):
-                self.routes[a].insert(t+a.progress, adj[1])
-            print(f"Adding {adj} to route of {yielder}, as in {a.remaining_route()[t-1:t+2]}")
+                self.routes[yielder].insert(t+yielder.progress, adj[1])
+
+            remaining_changes = yielder.remaining_route()[max(0, t-3):t+adj[2]+1]
+            print(f"Adding {adj} to route of {yielder}, as in {remaining_changes}")
+            tried.append(((a, b), adj[1]))
             collisions = self.future_collisions()
 
 
@@ -280,16 +394,18 @@ class TrainModel(ap.Model):
             for i in range(0,len(f_routes)-1):
                 i_pos = f_pos[i]
                 i_pos_tm1 = f_m1_pos[i]
-                if i_pos is None or i_pos in stations: continue
                 for j in range(i+1, len(f_routes)):
                     j_pos = f_pos[j]
                     j_pos_tm1 = f_m1_pos[j]
-                    if j_pos is None or j_pos in stations: continue
                     
-                    if i_pos == j_pos:
+                    if not (i_pos is None or i_pos in stations or j_pos is None or j_pos in stations) and i_pos == j_pos:
                         # Add to return value the collision and when it would happen
                         collisions.append( (t, (self.trains[i], self.trains[j])) )
-                    elif i_pos == j_pos_tm1 and j_pos == i_pos_tm1:
+
+                    if i_pos_tm1 is None: continue 
+                    if j_pos_tm1 is None: continue 
+                    # Check for swap crash
+                    if i_pos == j_pos_tm1 and j_pos == i_pos_tm1:
                         collisions.append( (t-1, (self.trains[i], self.trains[j])) )
 
         return collisions
@@ -297,6 +413,10 @@ class TrainModel(ap.Model):
 
     def step(self):
         self.trains.follow_A_star()
+
+    def end(self):
+        for t in trains:
+            self.routes_hist[t] = self.routes[t]
 
 
 def animation_plot(model, ax):
@@ -312,9 +432,10 @@ def animation_plot(model, ax):
 
 fig, ax = plt.subplots()
         
-parameters = {'image': "Europa_70x90_trains_n_stations.ppm",
+parameters = {'image': "Europa_2.ppm",
               'im_map': {0x00ff00: 1, 0x00: 0, 0xff0000: 2},
-              'rounds': 10}
+              'rounds': 10,
+              'seed' : 12351}
 
 model = TrainModel(parameters)
 #model.run(display=False)
@@ -323,7 +444,7 @@ animation = ap.animate(model, fig, ax, animation_plot)
 
 name_video = "video_demo.mp4"
 
-animation.save(name_video, fps=2)
+animation.save(name_video, fps=15)
 print(f"Generated video {name_video}")
 
 #                                  # Generating JSON First #
