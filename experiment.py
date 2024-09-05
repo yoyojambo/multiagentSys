@@ -33,8 +33,7 @@ class Train(ap.Agent):
         self.progress = 0
 
     def next_roads(self):
-        # Filters the grid's `.neighbors` output to only the 4
-        # directions.
+        # Filters the grid's `.neighbors` output to only the 4 directions.
         t = self.model.tracks
         pos = t.positions[self]
         n_pos = list() # Neighbor positions
@@ -85,18 +84,9 @@ class Train(ap.Agent):
         assert (rem[t] == orem[t] or swap_collision), f"remaining_route[t] is not a collision {rem[t]} != {orem[t]}"
 
         for i, p in enumerate(rem[:t][::-1]):
-            # if not (p in orem[t:]):
-            #     # There is a point before an intersection
-            #     print(f"Intersection not needed, can be waited out!")
             if p in self.model.intersections:
-                # If the collision is in the same intersection but they don't go the same way
-                # if i == 0 and (rem[t-1] != orem[t+1]):
-                #     print(f"Using SC for {collision}")
-                #     return (t, rem[t-1], 1)
-
                 inter = self.model.intersections[p]
                 possible_spots = [self.model.tracks.positions[n] for n in FWF_neighbors(inter) ]
-                #print(possible_spots)
                 for poss in possible_spots:
                     if not poss in orem:
                         # if it is a "swap" collision, add 1 to the time waiting.
@@ -106,8 +96,6 @@ class Train(ap.Agent):
                         assert ins_point >= 0, f"Insert point is {ins_point}, which will insert {poss} in an unexpected place!"
 
                         return (ins_point, poss, wait)
-        else:
-            print(f"Found no way to avoid {collision} as {self}")
 
 
     def give_way(self, collision):
@@ -126,7 +114,6 @@ class Train(ap.Agent):
 
         # Give way point. The detour to be taken
         GW_point = None
-        #print(f"finding GW in: {orem[t*2+1:]}")
         for i, p in enumerate(orem[t*2+1:]):
             if GW_point: break
             if p in self.model.intersections:
@@ -137,8 +124,7 @@ class Train(ap.Agent):
                     if not poss_pos in orem:
                         GW_point = poss
 
-                if len(possible_spots) < 3:
-                    print(f"!!!!!!!!!! {inter} ({p}): {list(self.model.tracks.neighbors(inter))}")
+                assert len(possible_spots) > 2, f"Incorrectly attributed {inter} in {p} as an intersection!"
 
         if GW_point is None:
             # Reaching the end like this means `self` is trapped, it
@@ -160,17 +146,24 @@ class Train(ap.Agent):
         current = self.model.tracks.positions[self]
         diversion = self.model.tracks.positions[GW_point]
         final_dest = self.model.tracks.positions[objective]
-        print(f"New route for {self} from {current} to {diversion} to {final_dest}:")
         new_route = A_Star(self, GW_point) + A_Star(GW_point, objective)
-        print(new_route)
         self.model.routes[self] = new_route
         self.progress = 0
         
         return True
 
-    def priority_func(self):
-        rem = self.remaining_route()
-        P = len(rem)
+
+
+def priority_func(coll):
+    """Given a collision, returns the tuple of both parties involved
+    in a deterministic manner"""
+    a = coll[1][0]
+    b = coll[1][1]
+
+    if a.id < b.id:
+        return (a,b)
+    else:
+        return (b,a)
 
 
 def image_to_TrainModel(model, matrix, mapping):
@@ -181,8 +174,6 @@ def image_to_TrainModel(model, matrix, mapping):
         return mapping[col]
 
     mapped = np.vectorize(apply_mapping)(matrix)
-    # Muestra la interpretacion de la imagen y los colores
-    #print(mapped)
 
     trains = list()
     tracks = list()
@@ -191,7 +182,7 @@ def image_to_TrainModel(model, matrix, mapping):
     for y_i in range(matrix.shape[0]):
         for x_i in range(matrix.shape[1]):
             v = mapped[y_i, x_i]
-            #print(v)
+            
             if v < 0 or v > 2:
                 continue
 
@@ -234,14 +225,12 @@ class TrainModel(ap.Model):
             t = self.trains[i]
             goal = self.stations[i]
             route = A_Star(t, goal)
-            #print(f"Route for train in {self.tracks.positions[t]}:\n{route}\n{'='*50}\n")
             self.routes[t] = route
             self.routes_hist[t] = list()
 
 
         # Fill list of intersections
         self.intersections = dict()
-        # {self.tracks.positions[r]: r for r in self.trackList if len(self.tracks.neighbors(r)) >= 3}
         for r in self.trackList:
             n_iter = FWF_neighbors(r)
             only_roads = len([a for a in n_iter if not a in self.trains])
@@ -280,9 +269,6 @@ class TrainModel(ap.Model):
                 t.rounds = rounds_finished + 1
                 t.progress = 0
 
-            print(f"{t} assigned station in {self.routes[t][-1]} for round #{t.rounds + 1} (t={self.t})")
-            #print(f"Route for train in {pos}:\n{self.routes[t]}\n{'='*50}\n")
-
         all_finished = True
         for t in self.trains:
             # Some train still has not finished
@@ -300,14 +286,19 @@ class TrainModel(ap.Model):
         
         for i in range(len(positions)-1):
             train_i = self.trains[i]
+            # Disregard collisions if it happens on a station square
+            if positions[i] in stations: continue
             for j in range(i+1, len(positions)):
                 train_j = self.trains[j]
-                if positions[i] in stations or positions[j] in stations: continue
+                if positions[j] in stations: continue
 
+                # Check for normal crashes
                 if positions[i] == positions[j]:
                     print(f"{train_i} and {train_j} collisioned in {positions[i]} (t={self.t})")
                     self.total_collisions += 1
-                if self.t > 0:
+
+                # Check for swap crashes
+                if self.t > 1:
                     assert train_i.log['pos'][-1] == positions[i] and train_j.log['pos'][-1] == positions[j]
                     
                     if train_i.log['pos'][-2] == train_j.log['pos'][-1] and train_i.log['pos'][-1] == train_j.log['pos'][-2]:
@@ -318,7 +309,7 @@ class TrainModel(ap.Model):
 
         if routes_change:
             self.resolve_collisions()        
-        
+
 
     def resolve_collisions(self):
         collisions = self.future_collisions()
@@ -326,19 +317,15 @@ class TrainModel(ap.Model):
         while collisions:
             coll = collisions.pop()
             
-            a = coll[1][0]
-            b = coll[1][1]
+            a, b = priority_func(coll)
 
             # Try with a
             yielder = a
             adj = a.adjust_route(coll)
             if adj is None:
-                print(f"{a} could not avoid, trying {b}")
                 adj = b.adjust_route(coll)
                 yielder = b
             if adj is None:
-                print(f"{coll} not avoidable through divertion alone! Backtracking!")
-
                 # Running give_way algorithm
                 yielder = a
                 gave_way = a.give_way(coll)
@@ -346,7 +333,6 @@ class TrainModel(ap.Model):
                     yielder = b
                     gave_way = b.give_way(coll)
                 if gave_way:
-                    print(f"{yielder} gave way!")
                     collisions = self.future_collisions()
                     continue
                 else:
@@ -372,7 +358,6 @@ class TrainModel(ap.Model):
                 self.routes[yielder].insert(t+yielder.progress, adj[1])
 
             remaining_changes = yielder.remaining_route()[max(0, t-3):t+adj[2]+1]
-            print(f"Adding {adj} to route of {yielder}, as in {remaining_changes}")
             tried.append(((a, b), adj[1]))
             collisions = self.future_collisions()
 
@@ -415,7 +400,7 @@ class TrainModel(ap.Model):
         self.trains.follow_A_star()
 
     def end(self):
-        for t in trains:
+        for t in self.trains:
             self.routes_hist[t] = self.routes[t]
 
 
@@ -429,45 +414,37 @@ def animation_plot(model, ax):
     color_dict = {0:'#ffbd33', 1:'#ff5733', 2:'#12ff33', None:'#d5e5d5'}
     ap.gridplot(attr_grid, ax=ax, color_dict=color_dict, convert=True)
 
+if __name__=="__main__":
+    fig, ax = plt.subplots()
 
-fig, ax = plt.subplots()
-        
-parameters = {'image': "Europa_2.ppm",
-              'im_map': {0x00ff00: 1, 0x00: 0, 0xff0000: 2},
-              'rounds': 10,
-              'seed' : 12351}
+    parameters = {'image': "Europa_2.ppm",
+                  'im_map': {0x00ff00: 1, 0x00: 0, 0xff0000: 2},
+                  'rounds': 5,
+                  'seed' : 12351}
 
-model = TrainModel(parameters)
-#model.run(display=False)
+    model = TrainModel(parameters)
+    #model.run(display=False)
 
-animation = ap.animate(model, fig, ax, animation_plot)
+    animation = ap.animate(model, fig, ax, animation_plot)
+    name_video = "video_demo.mp4"
 
-name_video = "video_demo.mp4"
+    animation.save(name_video, fps=15)
+    print(f"Generated video {name_video}")
 
-animation.save(name_video, fps=15)
-print(f"Generated video {name_video}")
+    #                                  # Generating JSON First #
+    #add file coordinates of all tracks
+    json_dict = {"tracks": [model.tracks.positions[t] for t in model.trackList]}
+    # Then stations
+    json_dict["stations"] = [model.tracks.positions[s] for s in model.stations]
+    # Then all trains and their routes historically
+    json_dict["trains"] = {t.id: t.log['pos'] for t in model.trains}
 
-#                                  # Generating JSON First #
-# #add file coordinates of all tracks
-# json_dict = {"tracks": [model.tracks.positions[t] for t in model.trackList]}
-# # Then stations
-# json_dict["stations"] = [model.tracks.positions[s] for s in model.stations]
-# # Then all trains and their routes historically
-# json_dict["trains"] = {t.id: t.log['pos'] for t in model.trains}
+    json_dump = json.dumps(json_dict, sort_keys=True)
 
-# json_dump = json.dumps(json_dict, sort_keys=True)
-# #print(json_dump)
+    write_q = input("="*10 +  "WRITE JSON?" + "="*10 + "\n")
+    if write_q:
+        with open("output.json", 'w') as f:
+            f.write(json_dump)
+            f.close()
 
-# # Writing the json output, that will be used by Unity through a http server
-# with open("output.json", 'w') as f:
-#     f.write(json_dump)
-#     f.close()
-
-# Useful for debuggin pathfinding algo's
-# for t in model.trains:
-#     print("Route of train with id", t.id)
-#     print(t.log, '\n')
-
-
-#IPython.display.HTML(animation.to_jshtml(fps=3))
-#model.run()
+            
