@@ -135,7 +135,7 @@ class Train(ap.Agent):
         # Essentially re-writing the whole route, to include the detour
         objective = None
         for s in self.model.stations:
-            if model.tracks.positions[s] == rem[-1]:
+            if self.model.tracks.positions[s] == rem[-1]:
                 objective = s
                 break
 
